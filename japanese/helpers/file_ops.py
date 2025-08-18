@@ -5,6 +5,7 @@ import functools
 import os
 import pathlib
 import subprocess
+import sys
 from collections.abc import Iterable
 from typing import Union
 
@@ -49,13 +50,55 @@ def find_config_json() -> pathlib.Path:
     return find_file_in_parents("config.json")
 
 
+def _platform_data_home(app_name: str) -> pathlib.Path:
+    """
+    Return a per-user writable data directory for the app/add-on.
+    """
+    if sys.platform.startswith("linux"):
+        base = (
+            os.environ.get("XDG_STATE_HOME")
+            or os.environ.get("XDG_DATA_HOME")
+            or str(pathlib.Path.home() / ".local" / "share")
+        )
+        return pathlib.Path(base) / "anki-addons" / app_name
+
+    if sys.platform == "darwin":
+        return pathlib.Path.home() / "Library" / "Application Support" / "Anki" / "Addons" / app_name
+
+    # Windows fallback
+    base = os.environ.get("APPDATA", str(pathlib.Path.home() / "AppData" / "Roaming"))
+    return pathlib.Path(base) / "Anki" / "Addons" / app_name
+
+
 @functools.cache
 def user_files_dir() -> pathlib.Path:
-    """Return path to the user files directory."""
-    for parent_dir in walk_parents(__file__):
-        if (dir_path := parent_dir.joinpath("user_files")).is_dir():
-            return dir_path
-    raise RuntimeError("couldn't find user_files directory")
+    """
+    Return a per-user writable directory for this add-on’s data/state.
+
+    Priority:
+      1) $AJT_USER_FILES_DIR if set (absolute path).
+      2) Platform-appropriate user data dir (XDG/macOS/Windows).
+      3) (Optional) Legacy repo 'user_files' when $AJT_USE_REPO_USER_FILES=1.
+    """
+    # 1) explicit override
+    override = os.environ.get("AJT_USER_FILES_DIR")
+    if override:
+        p = pathlib.Path(override).expanduser()
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    # 2) platform default
+    p = _platform_data_home(THIS_ADDON_MODULE)
+    p.mkdir(parents=True, exist_ok=True)
+
+    # 3) optional legacy fallback for devs
+    if os.environ.get("AJT_USE_REPO_USER_FILES") == "1":
+        for parent_dir in walk_parents(__file__):
+            legacy = parent_dir / "user_files"
+            if legacy.is_dir():
+                return legacy
+
+    return p
 
 
 def open_file(path: str) -> None:
@@ -78,7 +121,7 @@ def open_file(path: str) -> None:
         )
     else:
         with no_bundled_libs():
-            QDesktopServices.openUrl(QUrl(f"file://{path}"))
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
 
 def file_exists(file_path: str) -> bool:
